@@ -1,14 +1,14 @@
-NATTER
+This is NATTER
 ======
 
-This is NATTER, a simple tool for all those not lovers out there!
+A simple tool for all those nat lovers out there!
 ----
 
 + Are you a **NAT** novice that is bored of always having the same carrier grade nat IP?
 
 + Or are you a **NAT** enthusiast, embracing the multiple router per line concept?
 
-+ Maybe you are an advanced **NAT** fanatic with that special urge for scrambled and unsuperable network traffic?
++ Maybe you are an advanced **NAT** fanatic with that special urge for scrambled and insuperable network traffic?
 
 NATTER is aiming to turn your life around!
 
@@ -18,7 +18,7 @@ Purpose
 
 **NATTER** will create close to an arbitrary number of nats on your local linux
 machine. Using the unmatched performance of linux network namespaces and
-netfilter **NATTER** will create a network expose that you will never forget!
+netfilter **NATTER** will create a network experience that you will never forget!
 
 
 Requirements
