@@ -1,0 +1,161 @@
+#!/bin/bash
+
+function usage() {
+    cat <<EOF
+    $0 -n num [-c (A,C)] [-d]
+
+    $0 will create a shitload of NAT networks using linux network namespaces and netfilter !
+
+    Options:
+        -n , a number of chained NAT you want to create
+        -c , what kind of network to create on each NAT level
+        -s , be extra safe and pick a random IP in every nat
+        -d , disable all namespaces
+
+EOF
+exit 1
+}
+
+function init() {
+    if [ $natclass = "A" ] && [ $safe = 0 ] ; then
+        if [ $natnum -gt 255 ] ; then
+            echo "use -c C or -s for more than 256 networks"
+            exit 1
+        fi
+    fi
+    if [ -f iptables.state ] ; then
+        echo "$0 was run before, clean up with \"$0 -d\" first"
+        exit 1
+    fi
+    echo "saving state"
+    iptables-save > iptables.state
+    cat /proc/sys/net/ipv4/ip_forward > forward.state
+    if [ $natclass = "A" ] ; then
+        export N0=192
+        export N1=168
+    fi
+    if [ $natclass = "C" ] ; then
+        export N0=10
+        export N1=0
+    fi
+    # set host nat
+    echo "1" > /proc/sys/net/ipv4/ip_forward
+    iptables -t nat -A POSTROUTING -o $gwif -j MASQUERADE
+    # set first virtual ethernet pair with a fixed ip
+    ip l add nat0 type veth peer name gw1
+    ip a add 10.0.0.1/24 dev nat0
+    # blacklist local net that nameserver resides in
+    NSNET=$(grep nameserver /etc/resolv.conf  | head -n1 | cut -d" " -f2 | cut -d"." -f1-3)
+}
+
+function disable(){
+    natnum=$(ip netns | grep "^nat" | wc -l)
+    [ $natnum -eq 0 ] && exit 0
+    ip l del nat0
+    for i in $(seq 1 $natnum) ; do
+        echo -ne "\rremoving nat$i"
+        ip netns del nat$i
+    done
+    echo -e "\nrestoring state"
+    [ -f iptables.state ] && iptables-restore < iptables.state
+    [ -f forward.state  ] && cat forward.state > /proc/sys/net/ipv4/ip_forward
+    rm -f iptables.state forward.state
+    exit 0
+}
+
+
+
+function getnibbles(){
+    i=$1
+    if [ $natclass = "A" ] ; then
+        if [ $safe = 1 ] ; then
+            N0=192 ; N1=168 ; N2=$((RANDOM%256))
+            while [ $N0.$N1.$N2 = $SAVED_UPSTREAM ]; do
+                N0=192 ; N1=168 ; N2=$((RANDOM%256))
+            done
+        else
+            N0=192 ; N1=168 ; N2=$i
+        fi
+    fi
+    if [ $natclass = "C" ] ; then
+        if [ $safe = 1 ] ; then
+            N0=10 ; N1=$((RANDOM%256)) ; N2=$((RANDOM%256))
+            while [ $N0.$N1.$N2 = $SAVED_UPSTREAM ] ; do
+                N0=10 ; N1=$((RANDOM%256)) ; N2=$((RANDOM%256))
+            done
+        else
+            N0=10 ; N1=$((i/256)) ; N2=$((i%256))
+        fi
+    fi
+    if [ $N0.$N1.$N2 = $NSNET ] ; then
+        # in case of ascending nets chose something that's not a neighbour
+        echo $(getnibbles $((i+2%256)))
+    else
+        echo $N0.$N1.$N2
+    fi
+    set +x
+}
+
+function create_nats(){
+    for i in $(seq 1 $natnum) ; do
+        UPSTREAM=$SAVED_UPSTREAM
+        CURR=$(getnibbles $i)
+        SAVED_UPSTREAM=$CURR
+        echo -ne "\rsetting up nat$i on $CURR.0/24"
+        ip netns add nat$i
+        # claim previously set gw interface and set it up
+        if [ $i -gt 1 ] ; then
+            ip netns exec nat$((i-1)) ip l set gw$i netns nat$i up
+        else # no netns on first layer
+            ip l set gw$i netns nat$i up
+        fi
+        # this saves context switches and will speed up the creation a little
+        cat <<EOF >netnsscript.sh
+ip a a ${UPSTREAM}.2/24 dev gw$i
+# add a new network in the namespace with a veth pair
+ip l add nat$i type veth peer name gw$((i+1))
+# and configure it
+ip l set nat$i up
+ip a a ${CURR}.1/24 dev nat$i
+# actual nating
+iptables -t nat -A POSTROUTING -o gw$i -j MASQUERADE
+iptables -t mangle -A PREROUTING -i nat$i -j TTL --ttl-set 64
+iptables -t mangle -A POSTROUTING -o nat$i -j TTL --ttl-set 64
+ip r a default via ${UPSTREAM}.1 dev gw$i
+EOF
+        chmod +x netnsscript.sh
+        ip netns exec nat$i ./netnsscript.sh
+    done
+    rm -f ./netnsscript.sh
+}
+
+
+# MAIN
+
+[ $# -eq 0 ] && usage
+if [ $(id -u) -ne 0 ] ; then
+    echo -e "need to be root, please run\n\tsudo $0 $*"
+    exit 1
+fi
+
+natnum=1
+natclass="C"
+safe=0
+disable=0
+gwif=$(ip r | grep default | head -n1 | cut -d" " -f5)
+SAVED_UPSTREAM="10.0.0"
+while getopts "n:c:sdh" opt; do
+    case $opt in
+        n) export natnum="$OPTARG";;
+        c) export natclass="$OPTARG";;
+        s) safe=1;;
+        d) disable;;
+        *) usage;;
+    esac
+done
+init
+create_nats
+echo -e "\njumping into the rabbit hole..."
+echo ip netns exec nat$natnum ping ip4.me
+ip netns exec nat$natnum ping ip4.me
+exit 0
