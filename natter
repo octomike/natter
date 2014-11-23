@@ -43,6 +43,7 @@ function init() {
     iptables -t nat -A POSTROUTING -o $gwif -j MASQUERADE
     # set first virtual ethernet pair with a fixed ip
     ip l add nat0 type veth peer name gw1
+    ip l set nat0 up
     ip a add 10.0.0.1/24 dev nat0
     # blacklist local net that nameserver resides in
     NSNET=$(grep nameserver /etc/resolv.conf  | head -n1 | cut -d" " -f2 | cut -d"." -f1-3)
